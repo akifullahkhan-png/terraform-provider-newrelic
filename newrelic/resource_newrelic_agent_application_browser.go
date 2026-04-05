@@ -15,6 +15,7 @@ import (
 	"github.com/newrelic/newrelic-client-go/v2/pkg/agentapplications"
 	"github.com/newrelic/newrelic-client-go/v2/pkg/common"
 	"github.com/newrelic/newrelic-client-go/v2/pkg/entities"
+	nrErrors "github.com/newrelic/newrelic-client-go/v2/pkg/errors"
 )
 
 func resourceNewRelicBrowserApplication() *schema.Resource {
@@ -128,9 +129,15 @@ func resourceNewRelicBrowserApplicationRead(ctx context.Context, d *schema.Resou
 	retryErr := resource.RetryContext(ctx, d.Timeout(schema.TimeoutRead), func() *resource.RetryError {
 		resp, err := client.Entities.GetEntityWithContext(ctx, common.EntityGUID(guid))
 		if err != nil {
+			// Check if the entity was not found - this means it was deleted outside Terraform
+			if _, ok := err.(*nrErrors.NotFound); ok {
+				d.SetId("")
+				return nil
+			}
 			return resource.NonRetryableError(err)
 		}
 
+		// Check for nil response - retry as it may be due to eventual consistency
 		if resp == nil || *resp == nil {
 			return resource.RetryableError(fmt.Errorf("entity with GUID %s not found", guid))
 		}
@@ -176,7 +183,13 @@ func resourceNewRelicBrowserApplicationRead(ctx context.Context, d *schema.Resou
 	})
 
 	if retryErr != nil {
-		d.SetId("")
+		// If we exhausted all retries trying to find the entity, it was likely deleted
+		// Check if the error is about not finding the entity
+		if strings.Contains(retryErr.Error(), "not found") {
+			d.SetId("")
+			return nil
+		}
+		// For other errors, return them as actual errors
 		return diag.FromErr(retryErr)
 	}
 
